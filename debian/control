@@ -2,7 +2,7 @@ Source: s3fs-fuse
 Maintainer: Louis McCoy <louie@wellandlighthouse.com>
 Section: otherosfs
 Priority: optional
-Standards-Version: 3.9.2
+Standards-Version: 3.9.4
 Build-Depends: automake, debhelper (>= 9)
 Vcs-Git: https://github.com/wellandlighthouse/s3fs-fuse.git
 
