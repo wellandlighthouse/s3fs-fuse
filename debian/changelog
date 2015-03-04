@@ -1,0 +1,5 @@
+s3fs-fuse (1.78-lighthouse1) UNRELEASED; urgency=low
+
+  * Initial release, built from source 'master' branch
+
+ -- Louis McCoy <louie@wellandlighthouse.com>  Wed, 04 Mar 2015 15:10:00 -0500
