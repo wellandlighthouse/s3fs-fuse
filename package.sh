@@ -10,6 +10,11 @@ cd s3fs-fuse_$VER
 cp ../doc/ . -R
 cp ../src/ . -R
 cp ../test/ . -R
+cp ../NEWS .
+cp ../README .
+cp ../AUTHORS .
+cp ../ChangeLog .
+cp ../COPYING .
 cp ../autogen.sh .
 cp ../configure.ac .
 cp ../Makefile.am .
