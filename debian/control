@@ -3,12 +3,12 @@ Maintainer: Louis McCoy <louie@wellandlighthouse.com>
 Section: otherosfs
 Priority: optional
 Standards-Version: 3.9.4
-Build-Depends: automake, debhelper (>= 9)
+Build-Depends: automake, libfuse-dev, libxml2-dev, pkg-config, debhelper (>= 9)
 Vcs-Git: https://github.com/wellandlighthouse/s3fs-fuse.git
 
 Package: s3fs-fuse
 Architecture: any
-Depends: ${misc:Depends}, libfuse-dev, libcurl4-openssl-dev, libxml2-dev, mime-support, libtool, pkg-config, libssl-dev
+Depends: ${misc:Depends}, ${shlibs:Depends}, libfuse-dev, libcurl4-openssl-dev, libxml2-dev, mime-support, libtool, libssl-dev
 Description: Mounts an Amazon AWS S3 bucket to the filesystem
  S3FS is FUSE (File System in User Space) based solution to 
  mount/unmount an Amazon S3 storage bucket and use system 
