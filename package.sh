@@ -13,7 +13,7 @@ cp ../test/ . -R
 cp ../autogen.sh .
 cp ../configure.ac .
 cp ../Makefile.am .
-tar -czf ../s3fs-fuse_$VER.orig.tar.gz ../s3fs-fuse_$VER/
+tar -czf ../s3fs_fuse-$VER.orig.tar.gz ../s3fs_fuse-$VER/
 
 # Set up to build Package
 cp ../debian/ . -R
@@ -21,4 +21,4 @@ debuild -us -uc
 
 # Clean up after yourself
 cd ..
-rm -rf s3fs-fuse_$VER/
+rm -rf s3fs_fuse-$VER/
