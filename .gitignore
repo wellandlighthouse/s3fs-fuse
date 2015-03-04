@@ -21,3 +21,4 @@
 /src/s3fs
 /test/Makefile
 /test/Makefile.in
+sftp-config.json
