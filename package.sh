@@ -4,6 +4,11 @@
 # S3FS-Fuse released under GNU at https://github.com/s3fs-fuse/s3fs-fuse
 VER="1.78"
 
+# Installing dependencies
+apt-get update
+apt-get upgrade -y
+apt-get install build-essential automake libfuse-dev libxml2-dev pkg-config debhelper devscripts libcurl4-openssl-dev mime-support libtool libssl-dev -y
+
 # Move / update files for source tarball
 mkdir s3fs-fuse_$VER
 cd s3fs-fuse_$VER
