@@ -14,8 +14,10 @@ then
 fi
 chmod 600 "$S3FS_CREDENTIALS_FILE"
 
-S3PROXY_VERSION="1.3.0"
-S3PROXY_BINARY="s3proxy-${S3PROXY_VERSION}-jar-with-dependencies.jar"
+S3PROXY_VERSION="1.4.0"
+S3PROXY_BINARY="s3proxy-${S3PROXY_VERSION}"
 if [ ! -e "${S3PROXY_BINARY}" ]; then
-    wget "http://repo1.maven.org/maven2/org/gaul/s3proxy/${S3PROXY_VERSION}/${S3PROXY_BINARY}"
+    wget "https://github.com/andrewgaul/s3proxy/releases/download/s3proxy-${S3PROXY_VERSION}/s3proxy" \
+            -O "${S3PROXY_BINARY}"
+    chmod +x "${S3PROXY_BINARY}"
 fi

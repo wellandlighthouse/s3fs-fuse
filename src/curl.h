@@ -65,7 +65,7 @@ struct filepart
 {
   bool        uploaded;     // does finish uploading
   std::string etag;         // expected etag value
-  int         fd;           // base file(temporary full file) discriptor
+  int         fd;           // base file(temporary full file) descriptor
   off_t       startpos;     // seek fd point for uploading
   ssize_t     size;         // uploading size
   etaglist_t* etaglist;     // use only parallel upload
@@ -157,6 +157,7 @@ class S3fsCurl
     static pthread_mutex_t  curl_share_lock[SHARE_MUTEX_MAX];
     static bool             is_initglobal_done;
     static CURLSH*          hCurlShare;
+    static bool             is_cert_check;
     static bool             is_dns_cache;
     static bool             is_ssl_session_cache;
     static long             connect_timeout;
@@ -245,6 +246,7 @@ class S3fsCurl
     bool ResetHandle(void);
     bool RemakeHandle(void);
     bool ClearInternalData(void);
+    void insertV4Headers(const std::string &op, const std::string &path, const std::string &query_string, const std::string &payload_hash);
     std::string CalcSignatureV2(std::string method, std::string strMD5, std::string content_type, std::string date, std::string resource);
     std::string CalcSignature(std::string method, std::string canonical_uri, std::string query_string, std::string strdate, std::string payload_hash, std::string date8601);
     bool GetUploadId(std::string& upload_id);
@@ -266,6 +268,7 @@ class S3fsCurl
 
     // class methods(valiables)
     static std::string LookupMimeType(std::string name);
+    static bool SetCheckCertificate(bool isCertCheck);
     static bool SetDnsCache(bool isCache);
     static bool SetSslSessionCache(bool isCache);
     static long SetConnectTimeout(long timeout);

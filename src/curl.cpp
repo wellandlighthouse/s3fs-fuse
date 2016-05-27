@@ -51,6 +51,8 @@
 
 using namespace std;
 
+static const std::string empty_payload_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
 //-------------------------------------------------------------------
 // Utilities
 //-------------------------------------------------------------------
@@ -90,6 +92,39 @@ static bool make_md5_from_string(const char* pstr, string& md5)
   }
   fclose(fp);
   return true;
+}
+
+static string url_to_host(const std::string &url)
+{
+    DPRNNN("url is %s", url.c_str());
+
+    static const string http = "http://";
+    static const string https = "https://";
+    std::string host;
+
+    if (url.compare(0, http.size(), http) == 0) {
+        host = url.substr(http.size());
+    } else if (url.compare(0, https.size(), https) == 0) {
+        host = url.substr(https.size());
+    } else {
+        assert(!"url does not begin with http:// or https://");
+    }
+
+    size_t idx;
+
+    if ((idx = host.find(':')) != string::npos || (idx = host.find('/')) != string::npos) {
+        return host.substr(0, idx);
+    } else {
+        return host;
+    }
+}
+
+static string get_bucket_host()
+{
+  if(!pathrequeststyle){
+    return bucket + "." + url_to_host(host);
+  }
+  return url_to_host(host) + "/" + bucket;
 }
 
 #if 0 // noused
@@ -199,14 +234,21 @@ const char* BodyData::str(void) const
 #define IAMCRED_EXPIRATION          "Expiration"
 #define IAMCRED_KEYCOUNT            4
 
+// [NOTICE]
+// This symbol is for libcurl under 7.23.0
+#ifndef CURLSHE_NOT_BUILT_IN
+#define CURLSHE_NOT_BUILT_IN        5
+#endif
+
 pthread_mutex_t  S3fsCurl::curl_handles_lock;
 pthread_mutex_t  S3fsCurl::curl_share_lock[SHARE_MUTEX_MAX];
 bool             S3fsCurl::is_initglobal_done  = false;
 CURLSH*          S3fsCurl::hCurlShare          = NULL;
+bool             S3fsCurl::is_cert_check       = true; // default
 bool             S3fsCurl::is_dns_cache        = true; // default
 bool             S3fsCurl::is_ssl_session_cache= true; // default
-long             S3fsCurl::connect_timeout     = 10;   // default
-time_t           S3fsCurl::readwrite_timeout   = 30;   // default
+long             S3fsCurl::connect_timeout     = 300;  // default
+time_t           S3fsCurl::readwrite_timeout   = 60;   // default
 int              S3fsCurl::retries             = 3;    // default
 bool             S3fsCurl::is_public_bucket    = false;
 string           S3fsCurl::default_acl         = "private";
@@ -331,15 +373,21 @@ bool S3fsCurl::InitShareCurl(void)
     return false;
   }
   if(S3fsCurl::is_dns_cache){
-    if(CURLSHE_OK != (nSHCode = curl_share_setopt(S3fsCurl::hCurlShare, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS))){
+    nSHCode = curl_share_setopt(S3fsCurl::hCurlShare, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS);
+    if(CURLSHE_OK != nSHCode && CURLSHE_BAD_OPTION != nSHCode && CURLSHE_NOT_BUILT_IN != nSHCode){
       DPRN("curl_share_setopt(DNS) returns %d(%s)", nSHCode, curl_share_strerror(nSHCode));
       return false;
+    }else if(CURLSHE_BAD_OPTION == nSHCode || CURLSHE_NOT_BUILT_IN == nSHCode){
+      DPRN("curl_share_setopt(DNS) returns %d(%s), but continue without shared dns data.", nSHCode, curl_share_strerror(nSHCode));
     }
   }
   if(S3fsCurl::is_ssl_session_cache){
-    if(CURLSHE_OK != (nSHCode = curl_share_setopt(S3fsCurl::hCurlShare, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION))){
+    nSHCode = curl_share_setopt(S3fsCurl::hCurlShare, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION);
+    if(CURLSHE_OK != nSHCode && CURLSHE_BAD_OPTION != nSHCode && CURLSHE_NOT_BUILT_IN != nSHCode){
       DPRN("curl_share_setopt(SSL SESSION) returns %d(%s)", nSHCode, curl_share_strerror(nSHCode));
       return false;
+    }else if(CURLSHE_BAD_OPTION == nSHCode || CURLSHE_NOT_BUILT_IN == nSHCode){
+      DPRN("curl_share_setopt(SSL SESSION) returns %d(%s), but continue without shared ssl session data.", nSHCode, curl_share_strerror(nSHCode));
     }
   }
   if(CURLSHE_OK != (nSHCode = curl_share_setopt(S3fsCurl::hCurlShare, CURLSHOPT_USERDATA, (void*)&S3fsCurl::curl_share_lock[0]))){
@@ -687,6 +735,12 @@ size_t S3fsCurl::DownloadWriteCallback(void* ptr, size_t size, size_t nmemb, voi
   return totalwrite;
 }
 
+bool S3fsCurl::SetCheckCertificate(bool isCertCheck) {
+    bool old = S3fsCurl::is_cert_check;
+    S3fsCurl::is_cert_check = isCertCheck;
+    return old;
+}
+
 bool S3fsCurl::SetDnsCache(bool isCache)
 {
   bool old = S3fsCurl::is_dns_cache;
@@ -999,14 +1053,14 @@ int S3fsCurl::ParallelMultipartUploadRequest(const char* tpath, headers_t& meta,
 
   // duplicate fd
   if(-1 == (fd2 = dup(fd)) || 0 != lseek(fd2, 0, SEEK_SET)){
-    DPRN("Cloud not duplicate file discriptor(errno=%d)", errno);
+    DPRN("Could not duplicate file descriptor(errno=%d)", errno);
     if(-1 != fd2){
       close(fd2);
     }
     return -errno;
   }
   if(-1 == fstat(fd2, &st)){
-    DPRN("Invalid file discriptor(errno=%d)", errno);
+    DPRN("Invalid file descriptor(errno=%d)", errno);
     close(fd2);
     return -errno;
   }
@@ -1271,6 +1325,11 @@ bool S3fsCurl::ResetHandle(void)
   }
   if((S3fsCurl::is_dns_cache || S3fsCurl::is_ssl_session_cache) && S3fsCurl::hCurlShare){
     curl_easy_setopt(hCurl, CURLOPT_SHARE, S3fsCurl::hCurlShare);
+  }
+  if(!S3fsCurl::is_cert_check) {
+    DPRN("'no_check_certificate' option in effect.")
+    DPRN("The server certificate won't be checked against the available certificate authorities.")
+    curl_easy_setopt(hCurl, CURLOPT_SSL_VERIFYPEER, false);
   }
   if(S3fsCurl::is_verbose){
     curl_easy_setopt(hCurl, CURLOPT_VERBOSE, true);
@@ -1585,9 +1644,8 @@ int S3fsCurl::RequestPerform(void)
           DPRNNN("curl_easy_getinfo failed while trying to retrieve HTTP response code");
           return -EIO;
         }
-        DPRNNN("HTTP response code %ld", LastResponseCode);
-
         if(400 > LastResponseCode){
+          DPRNNN("HTTP response code %ld", LastResponseCode);
           return 0;
         }
         if(500 <= LastResponseCode){
@@ -1672,10 +1730,13 @@ int S3fsCurl::RequestPerform(void)
         break;
 
       case CURLE_SSL_CACERT:
+        DPRN("### CURLE_SSL_CACERT");
+
         // try to locate cert, if successful, then set the
         // option and continue
         if(0 == S3fsCurl::curl_ca_bundle.size()){
           if(!S3fsCurl::LocateBundle()){
+            DPRNCRIT("could not get CURL_CA_BUNDLE.");
             exit(EXIT_FAILURE);
           }
           break; // retry with CAINFO
@@ -1686,6 +1747,8 @@ int S3fsCurl::RequestPerform(void)
 
 #ifdef CURLE_PEER_FAILED_VERIFICATION
       case CURLE_PEER_FAILED_VERIFICATION:
+        DPRN("### CURLE_PEER_FAILED_VERIFICATION");
+
         first_pos = bucket.find_first_of(".");
         if(first_pos != string::npos){
           FPRNNN("curl returned a CURL_PEER_FAILED_VERIFICATION error");
@@ -1905,6 +1968,28 @@ bool S3fsCurl::GetUploadId(string& upload_id)
   return result;
 }
 
+void S3fsCurl::insertV4Headers(const string &op, const string &path, const string &query_string, const string &payload_hash)
+{
+  DPRNNN("computing signature [%s] [%s] [%s] [%s]", op.c_str(), path.c_str(), query_string.c_str(), payload_hash.c_str());
+  string strdate;
+  string date8601;
+  get_date_sigv3(strdate, date8601);
+
+  string contentSHA256 = payload_hash.empty() ? empty_payload_hash : payload_hash;
+
+  //string canonical_headers, signed_headers;
+  requestHeaders = curl_slist_sort_insert(requestHeaders, "host", get_bucket_host().c_str());
+  requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-content-sha256", contentSHA256.c_str());
+  requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-date", date8601.c_str());
+
+  if(!S3fsCurl::IsPublicBucket()){
+    string Signature = CalcSignature(op, path, query_string, strdate, contentSHA256, date8601);
+    string auth = "AWS4-HMAC-SHA256 Credential=" + AWSAccessKeyId + "/" + strdate + "/" + endpoint +
+        "/s3/aws4_request, SignedHeaders=" + get_sorted_header_keys(requestHeaders) + ", Signature=" + Signature;
+    requestHeaders = curl_slist_sort_insert(requestHeaders, "Authorization", auth.c_str());
+  }
+}
+
 int S3fsCurl::DeleteRequest(const char* tpath)
 {
   FPRNNN("[tpath=%s]", SAFESTRPTR(tpath));
@@ -1920,7 +2005,7 @@ int S3fsCurl::DeleteRequest(const char* tpath)
   MakeUrlResource(get_realpath(tpath).c_str(), resource, turl);
 
   url             = prepare_url(turl.c_str());
-  path            = tpath;
+  path            = get_realpath(tpath);
   requestHeaders  = NULL;
   responseHeaders.clear();
 
@@ -1934,21 +2019,7 @@ int S3fsCurl::DeleteRequest(const char* tpath)
     }
 
   }else{
-    string payload_hash  = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    string strdate;
-    string date8601;
-    get_date_sigv3(strdate, date8601);
-
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "host", string(bucket + ".s3.amazonaws.com").c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-content-sha256", payload_hash.c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-date", date8601.c_str());
-
-    if(!S3fsCurl::IsPublicBucket()){
-      string Signature = CalcSignature("DELETE", path, "", strdate, payload_hash, date8601);
-      requestHeaders   = curl_slist_sort_insert(requestHeaders, "Authorization",
-                         string("AWS4-HMAC-SHA256 Credential=" + AWSAccessKeyId + "/" + strdate + "/" + endpoint + 
-                         "/s3/aws4_request, SignedHeaders=" + get_sorted_header_keys(requestHeaders) + ", Signature=" + Signature).c_str());
-    }
+    insertV4Headers("DELETE", path, "", "");
   }
 
   curl_easy_setopt(hCurl, CURLOPT_URL, url.c_str());
@@ -2048,7 +2119,7 @@ bool S3fsCurl::PreHeadRequest(const char* tpath, const char* bpath, const char* 
 
   // libcurl 7.17 does deep copy of url, deep copy "stable" url
   url             = prepare_url(turl.c_str());
-  path            = tpath;
+  path            = get_realpath(tpath);
   base_path       = SAFESTRPTR(bpath);
   saved_path      = SAFESTRPTR(savedpath);
   requestHeaders  = NULL;
@@ -2074,21 +2145,7 @@ bool S3fsCurl::PreHeadRequest(const char* tpath, const char* bpath, const char* 
     }
 
   }else{
-    string payload_hash  = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    string strdate;
-    string date8601;
-    get_date_sigv3(strdate, date8601);
-
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "host", string(bucket + ".s3.amazonaws.com").c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-content-sha256", payload_hash.c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-date", date8601.c_str());
-
-    if(!S3fsCurl::IsPublicBucket()){
-      string Signature = CalcSignature("HEAD", path, "", strdate, payload_hash, date8601);
-      requestHeaders   = curl_slist_sort_insert(requestHeaders, "Authorization",
-                         string("AWS4-HMAC-SHA256 Credential=" + AWSAccessKeyId + "/" + strdate + "/" + endpoint + 
-                         "/s3/aws4_request, SignedHeaders=" + get_sorted_header_keys(requestHeaders) + ", Signature=" + Signature).c_str());
-    }
+    insertV4Headers("HEAD", path, "", "");
   }
 
   curl_easy_setopt(hCurl, CURLOPT_URL, url.c_str());
@@ -2175,7 +2232,7 @@ int S3fsCurl::PutHeadRequest(const char* tpath, headers_t& meta, bool is_copy)
   MakeUrlResource(get_realpath(tpath).c_str(), resource, turl);
 
   url             = prepare_url(turl.c_str());
-  path            = tpath;
+  path            = get_realpath(tpath);
   requestHeaders  = NULL;
   responseHeaders.clear();
   bodydata        = new BodyData();
@@ -2234,21 +2291,7 @@ int S3fsCurl::PutHeadRequest(const char* tpath, headers_t& meta, bool is_copy)
     }
 
   }else{
-    string payload_hash  = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    string strdate;
-    string date8601;
-    get_date_sigv3(strdate, date8601);
-
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "host", string(bucket + ".s3.amazonaws.com").c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-content-sha256", payload_hash.c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-date", date8601.c_str());
-
-    if(!S3fsCurl::IsPublicBucket()){
-      string Signature = CalcSignature("PUT", path, "", strdate, payload_hash, date8601);
-      requestHeaders   = curl_slist_sort_insert(requestHeaders, "Authorization", 
-                         string("AWS4-HMAC-SHA256 Credential=" + AWSAccessKeyId + "/" + strdate + "/" + endpoint + 
-                         "/s3/aws4_request, SignedHeaders=" + get_sorted_header_keys(requestHeaders) + ", Signature=" + Signature).c_str());
-    }
+    insertV4Headers("PUT", path, "", "");
   }
 
   // setopt
@@ -2304,7 +2347,7 @@ int S3fsCurl::PutRequest(const char* tpath, headers_t& meta, int fd)
   MakeUrlResource(get_realpath(tpath).c_str(), resource, turl);
 
   url             = prepare_url(turl.c_str());
-  path            = tpath;
+  path            = get_realpath(tpath);
   requestHeaders  = NULL;
   responseHeaders.clear();
   bodydata        = new BodyData();
@@ -2364,25 +2407,7 @@ int S3fsCurl::PutRequest(const char* tpath, headers_t& meta, int fd)
 
   }else{
     string payload_hash  = s3fs_sha256sum(fd, 0, -1);
-    string strdate;
-    string date8601;
-    get_date_sigv3(strdate, date8601);
-
-    if(0 == payload_hash.length()){
-      payload_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    }
-
-    //string canonical_headers, signed_headers;
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "host", string(bucket + ".s3.amazonaws.com").c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-content-sha256", payload_hash.c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-date", date8601.c_str());
-
-    if(!S3fsCurl::IsPublicBucket()){
-      string Signature = CalcSignature("PUT", path, "", strdate, payload_hash, date8601);
-      requestHeaders   = curl_slist_sort_insert(requestHeaders, "Authorization", 
-                         string("AWS4-HMAC-SHA256 Credential=" + AWSAccessKeyId + "/" + strdate + "/" + endpoint + 
-                         "/s3/aws4_request, SignedHeaders=" + get_sorted_header_keys(requestHeaders) + ", Signature=" + Signature).c_str());
-    }
+    insertV4Headers("PUT", path, "", payload_hash);
   }
 
   // setopt
@@ -2428,7 +2453,7 @@ int S3fsCurl::PreGetObjectRequest(const char* tpath, int fd, off_t start, ssize_
   MakeUrlResource(get_realpath(tpath).c_str(), resource, turl);
 
   url             = prepare_url(turl.c_str());
-  path            = tpath;
+  path            = get_realpath(tpath);
   requestHeaders  = NULL;
   responseHeaders.clear();
 
@@ -2456,21 +2481,7 @@ int S3fsCurl::PreGetObjectRequest(const char* tpath, int fd, off_t start, ssize_
     }
 
   }else{
-    string payload_hash  = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    string strdate;
-    string date8601;
-    get_date_sigv3(strdate, date8601);
-
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "host", string(bucket + ".s3.amazonaws.com").c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-content-sha256", payload_hash.c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-date", date8601.c_str());
-
-    if(!S3fsCurl::IsPublicBucket()){
-      string Signature = CalcSignature("GET", path, "", strdate, payload_hash, date8601);
-      requestHeaders   = curl_slist_sort_insert(requestHeaders, "Authorization", 
-                         string("AWS4-HMAC-SHA256 Credential=" + AWSAccessKeyId + "/" + strdate + "/" + endpoint + 
-                         "/s3/aws4_request, SignedHeaders=" + get_sorted_header_keys(requestHeaders) + ", Signature=" + Signature).c_str());
-    }
+    insertV4Headers("GET", path, "", "");
   }
 
   // setopt
@@ -2533,7 +2544,7 @@ int S3fsCurl::CheckBucket(void)
   MakeUrlResource(get_realpath("/").c_str(), resource, turl);
 
   url             = prepare_url(turl.c_str());
-  path            = "/";
+  path            = get_realpath("/");
   requestHeaders  = NULL;
   responseHeaders.clear();
   bodydata        = new BodyData();
@@ -2548,21 +2559,7 @@ int S3fsCurl::CheckBucket(void)
     }
 
   }else{
-    string payload_hash  = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    string strdate;
-    string date8601;
-    get_date_sigv3(strdate, date8601);
-
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "host", string(bucket + ".s3.amazonaws.com").c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-content-sha256", payload_hash.c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-date", date8601.c_str());
-
-    if(!S3fsCurl::IsPublicBucket()){
-      string Signature = CalcSignature("GET", "", "", strdate, payload_hash, date8601);
-      requestHeaders   = curl_slist_sort_insert(requestHeaders, "Authorization", 
-                         string("AWS4-HMAC-SHA256 Credential=" + AWSAccessKeyId + "/" + strdate + "/" + endpoint + 
-                         "/s3/aws4_request, SignedHeaders=" + get_sorted_header_keys(requestHeaders) + ", Signature=" + Signature).c_str());
-    }
+    insertV4Headers("GET", path, "", "");
   }
 
   // setopt
@@ -2599,7 +2596,7 @@ int S3fsCurl::ListBucketRequest(const char* tpath, const char* query)
   }
 
   url             = prepare_url(turl.c_str());
-  path            = tpath;
+  path            = get_realpath(tpath);
   requestHeaders  = NULL;
   responseHeaders.clear();
   bodydata        = new BodyData();
@@ -2615,21 +2612,7 @@ int S3fsCurl::ListBucketRequest(const char* tpath, const char* query)
     }
 
   }else{
-    string payload_hash  = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    string strdate;
-    string date8601;
-    get_date_sigv3(strdate, date8601);
-
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "host", string(bucket + ".s3.amazonaws.com").c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-content-sha256", payload_hash.c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-date", date8601.c_str());
-
-    if(!S3fsCurl::IsPublicBucket()){
-      string Signature = CalcSignature("GET", string(query), "", strdate, payload_hash, date8601);
-      requestHeaders   = curl_slist_sort_insert(requestHeaders, "Authorization", 
-                         string("AWS4-HMAC-SHA256 Credential=" + AWSAccessKeyId + "/" + strdate + "/" + endpoint + 
-                         "/s3/aws4_request, SignedHeaders=" + get_sorted_header_keys(requestHeaders) + ", Signature=" + Signature).c_str());
-    }
+    insertV4Headers("GET", query, "", "");
   }
 
   // setopt
@@ -2673,7 +2656,7 @@ int S3fsCurl::PreMultipartPostRequest(const char* tpath, headers_t& meta, string
   turl          += "?" + query_string;
   resource      += "?" + query_string;
   url            = prepare_url(turl.c_str());
-  path           = tpath;
+  path           = get_realpath(tpath);
   requestHeaders = NULL;
   bodydata       = new BodyData();
   responseHeaders.clear();
@@ -2729,24 +2712,10 @@ int S3fsCurl::PreMultipartPostRequest(const char* tpath, headers_t& meta, string
     }
 
   }else{
-    string payload_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    string strdate;
-    string date8601;
-    get_date_sigv3(strdate, date8601);
-
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "host", string(bucket + ".s3.amazonaws.com").c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-content-sha256", payload_hash.c_str());
     requestHeaders = curl_slist_sort_insert(requestHeaders, "Accept", NULL);
     requestHeaders = curl_slist_sort_insert(requestHeaders, "Content-Length", NULL);
     requestHeaders = curl_slist_sort_insert(requestHeaders, "Content-Type", contype.c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-date", date8601.c_str());
-
-    if(!S3fsCurl::IsPublicBucket()){
-      string Signature = CalcSignature("POST", tpath, query_string, strdate, payload_hash, date8601);
-      requestHeaders   = curl_slist_sort_insert(requestHeaders, "Authorization", 
-                         string("AWS4-HMAC-SHA256 Credential=" + AWSAccessKeyId + "/" + strdate + "/" + endpoint + 
-                         "/s3/aws4_request, SignedHeaders=" + get_sorted_header_keys(requestHeaders) + ", Signature=" + Signature).c_str());
-    }
+    insertV4Headers("POST", path, query_string, "");
   }
 
   // setopt
@@ -2819,7 +2788,7 @@ int S3fsCurl::CompleteMultipartPostRequest(const char* tpath, string& upload_id,
   turl                += "?" + query_string;
   resource            += "?" + query_string;
   url                  = prepare_url(turl.c_str());
-  path                 = tpath;
+  path                 = get_realpath(tpath);
   requestHeaders       = NULL;
   bodydata             = new BodyData();
   responseHeaders.clear();
@@ -2838,9 +2807,6 @@ int S3fsCurl::CompleteMultipartPostRequest(const char* tpath, string& upload_id,
 
   }else{
     string payload_hash;
-    string strdate;
-    string date8601;
-    get_date_sigv3(strdate, date8601);
 
     const unsigned char* cRequest     = reinterpret_cast<const unsigned char*>(postContent.c_str());
     unsigned int         cRequest_len = postContent.size();
@@ -2854,19 +2820,11 @@ int S3fsCurl::CompleteMultipartPostRequest(const char* tpath, string& upload_id,
     }
     payload_hash.assign(hexsRequest, &hexsRequest[sRequest_len * 2]);
 
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "host", string(bucket + ".s3.amazonaws.com").c_str());
     requestHeaders = curl_slist_sort_insert(requestHeaders, "Date", get_date_rfc850().c_str());
     requestHeaders = curl_slist_sort_insert(requestHeaders, "Accept", NULL);
     requestHeaders = curl_slist_sort_insert(requestHeaders, "Content-Type", contype.c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-content-sha256", payload_hash.c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-date", date8601.c_str());
 
-    if(!S3fsCurl::IsPublicBucket()){
-      string Signature = CalcSignature("POST", tpath, query_string, strdate, payload_hash, date8601);
-      requestHeaders   = curl_slist_sort_insert(requestHeaders, "Authorization", 
-                         string("AWS4-HMAC-SHA256 Credential=" + AWSAccessKeyId + "/" + strdate + "/" + endpoint + 
-                         "/s3/aws4_request, SignedHeaders=" + get_sorted_header_keys(requestHeaders) + ", Signature=" + Signature).c_str());
-    }
+    insertV4Headers("POST", path, query_string, payload_hash);
   }
 
   // setopt
@@ -2899,8 +2857,8 @@ int S3fsCurl::MultipartListRequest(string& body)
   }
   string resource;
   string turl;
-  path            = "/";
-  MakeUrlResource(get_realpath(path.c_str()).c_str(), resource, turl);
+  path            = get_realpath("/");
+  MakeUrlResource(path.c_str(), resource, turl);
 
   turl           += "?uploads";
   resource       += "?uploads";
@@ -2920,21 +2878,7 @@ int S3fsCurl::MultipartListRequest(string& body)
     }
 
   }else{
-    string payload_hash  = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    string strdate;
-    string date8601;
-    get_date_sigv3(strdate, date8601);
-
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "host", string(bucket + ".s3.amazonaws.com").c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-content-sha256", payload_hash.c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-date", date8601.c_str());
-
-    if(!S3fsCurl::IsPublicBucket()){
-      string Signature = CalcSignature("GET", "", "", strdate, payload_hash, date8601);
-      requestHeaders   = curl_slist_sort_insert(requestHeaders, "Authorization", 
-                         string("AWS4-HMAC-SHA256 Credential=" + AWSAccessKeyId + "/" + strdate + "/" + endpoint + 
-                         "/s3/aws4_request, SignedHeaders=" + get_sorted_header_keys(requestHeaders) + ", Signature=" + Signature).c_str());
-    }
+    insertV4Headers("GET", path, "", "");
   }
 
   // setopt
@@ -2974,7 +2918,7 @@ int S3fsCurl::AbortMultipartUpload(const char* tpath, string& upload_id)
   turl           += "?uploadId=" + upload_id;
   resource       += "?uploadId=" + upload_id;
   url             = prepare_url(turl.c_str());
-  path            = tpath;
+  path            = get_realpath(tpath);
   requestHeaders  = NULL;
   responseHeaders.clear();
 
@@ -2988,21 +2932,7 @@ int S3fsCurl::AbortMultipartUpload(const char* tpath, string& upload_id)
     }
 
   }else{
-    string payload_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    string strdate;
-    string date8601;
-    get_date_sigv3(strdate, date8601);
-
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "host", string(bucket + ".s3.amazonaws.com").c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-content-sha256", payload_hash.c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-date", date8601.c_str());
-
-    if(!S3fsCurl::IsPublicBucket()){
-      string Signature = CalcSignature("DELETE", tpath, "", strdate, payload_hash, date8601);
-      requestHeaders   = curl_slist_sort_insert(requestHeaders, "Authorization", 
-                         string("AWS4-HMAC-SHA256 Credential=" + AWSAccessKeyId + "/" + strdate + "/" + endpoint + 
-                         "/s3/aws4_request, SignedHeaders=" + get_sorted_header_keys(requestHeaders) + ", Signature=" + Signature).c_str());
-    }
+    insertV4Headers("DELETE", path, "", "");
   }
 
   curl_easy_setopt(hCurl, CURLOPT_URL, url.c_str());
@@ -3059,7 +2989,7 @@ int S3fsCurl::UploadMultipartPostSetup(const char* tpath, int part_num, string& 
   resource          += urlargs;
   turl              += urlargs;
   url                = prepare_url(turl.c_str());
-  path               = tpath;
+  path               = get_realpath(tpath);
   requestHeaders     = NULL;
   bodydata           = new BodyData();
   headdata           = new BodyData();
@@ -3077,20 +3007,7 @@ int S3fsCurl::UploadMultipartPostSetup(const char* tpath, int part_num, string& 
 
   }else{
     string payload_hash = s3fs_sha256sum(partdata.fd, partdata.startpos, partdata.size);
-    string strdate;
-    string date8601;
-    get_date_sigv3(strdate, date8601);
-
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "host", string(bucket + ".s3.amazonaws.com").c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-content-sha256", payload_hash.c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-date", date8601.c_str());
-
-    if(!S3fsCurl::IsPublicBucket()){
-      string Signature = CalcSignature("PUT", tpath, request_uri, strdate, payload_hash, date8601);
-      requestHeaders   = curl_slist_sort_insert(requestHeaders, "Authorization", 
-                         string("AWS4-HMAC-SHA256 Credential=" + AWSAccessKeyId + "/" + strdate + "/" + endpoint + 
-                         "/s3/aws4_request, SignedHeaders=" + get_sorted_header_keys(requestHeaders) + ", Signature=" + Signature).c_str());
-    }
+    insertV4Headers("PUT", path, request_uri, payload_hash);
   }
 
   // setopt
@@ -3158,7 +3075,7 @@ int S3fsCurl::CopyMultipartPostRequest(const char* from, const char* to, int par
   resource       += urlargs;
   turl           += urlargs;
   url             = prepare_url(turl.c_str());
-  path            = to;
+  path            = get_realpath(to);
   requestHeaders  = NULL;
   responseHeaders.clear();
   bodydata        = new BodyData();
@@ -3190,21 +3107,7 @@ int S3fsCurl::CopyMultipartPostRequest(const char* from, const char* to, int par
     }
 
   }else{
-    string payload_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-    string strdate;
-    string date8601;
-    get_date_sigv3(strdate, date8601);
-
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "host", string(bucket + ".s3.amazonaws.com").c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-content-sha256", payload_hash.c_str());
-    requestHeaders = curl_slist_sort_insert(requestHeaders, "x-amz-date", date8601.c_str());
-
-    if(!S3fsCurl::IsPublicBucket()){
-      string Signature = CalcSignature("PUT", path, "", strdate, payload_hash, date8601);
-      requestHeaders   = curl_slist_sort_insert(requestHeaders, "Authorization", 
-                         string("AWS4-HMAC-SHA256 Credential=" + AWSAccessKeyId + "/" + strdate + "/" + endpoint + 
-                         "/s3/aws4_request, SignedHeaders=" + get_sorted_header_keys(requestHeaders) + ", Signature=" + Signature).c_str());
-    }
+    insertV4Headers("PUT", path, "", "");
   }
 
   // setopt
@@ -3289,14 +3192,14 @@ int S3fsCurl::MultipartUploadRequest(const char* tpath, headers_t& meta, int fd,
 
   // duplicate fd
   if(-1 == (fd2 = dup(fd)) || 0 != lseek(fd2, 0, SEEK_SET)){
-    DPRN("Cloud not duplicate file discriptor(errno=%d)", errno);
+    DPRN("Could not duplicate file descriptor(errno=%d)", errno);
     if(-1 != fd2){
       close(fd2);
     }
     return -errno;
   }
   if(-1 == fstat(fd2, &st)){
-    DPRN("Invalid file discriptor(errno=%d)", errno);
+    DPRN("Invalid file descriptor(errno=%d)", errno);
     close(fd2);
     return -errno;
   }
