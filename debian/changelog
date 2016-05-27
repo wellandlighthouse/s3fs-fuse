@@ -1,3 +1,9 @@
+s3fs-fuse (1.79-lighthouse1) UNRELEASED; urgency=low
+
+  * Updated to upstream version 1.79
+
+ -- Louis McCoy <louie@wellandlighthouse.com>  Fri, 27 May 2016 11:11:00 -0400
+
 s3fs-fuse (1.78-lighthouse1) UNRELEASED; urgency=low
 
   * Initial release, built from source 'master' branch

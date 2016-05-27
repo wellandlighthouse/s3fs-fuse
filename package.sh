@@ -2,7 +2,7 @@
 # Preps and compiles the S3FS Package
 # Written by louie@wellandlighthouse.com
 # S3FS-Fuse released under GNU at https://github.com/s3fs-fuse/s3fs-fuse
-VER="1.78"
+VER="1.79"
 
 # Installing dependencies
 apt-get update
